@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pompe à Insuline - Système Embarqué</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #e0f2fe 0%, #bfdbfe 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .auth-container {
+            max-width: 450px;
+            margin: 50px auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .card-header {
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 8px;
+        }
+
+        .card-description {
+            color: #64748b;
+            font-size: 14px;
+        }
+
+        .tabs {
+            margin-bottom: 24px;
+        }
+
+        .tabs-list {
+            display: flex;
+            gap: 4px;
+            border-bottom: 2px solid #e2e8f0;
+            margin-bottom: 20px;
+        }
+
+        .tab-trigger {
+            flex: 1;
+            padding: 12px 16px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #64748b;
+            transition: all 0.2s;
+            margin-bottom: -2px;
+        }
+
+        .tab-trigger.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #1e293b;
+            margin-bottom: 6px;
+        }
+
+        input[type="text"],
+        input[type="email"],
+        input[type="password"],
+        input[type="number"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-primary:disabled {
+            background: #94a3b8;
+            cursor: not-allowed;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-outline {
+            background: white;
+            color: #1e293b;
+            border: 1px solid #e2e8f0;
+        }
+
+        .btn-outline:hover {
+            background: #f8fafc;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        .btn-lg {
+            padding: 14px 18px;
+            font-size: 16px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            color: #1e293b;
+        }
+
+        .header p {
+            color: #64748b;
+            font-size: 14px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+        }
+
+        @media (min-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        .glycemia-display {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .glycemia-value {
+            font-size: 72px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .glycemia-unit {
+            color: #64748b;
+            font-size: 18px;
+            margin-bottom: 16px;
+        }
+
+        .glycemia-status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .badge-normal {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .badge-warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .badge-danger {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .separator {
+            height: 1px;
+            background: #e2e8f0;
+            margin: 16px 0;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            font-size: 14px;
+        }
+
+        .info-label {
+            color: #64748b;
+        }
+
+        .info-value {
+            font-weight: 500;
+        }
+
+        .slider-container {
+            padding: 12px 0;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #e2e8f0;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            border: none;
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 6px;
+            display: flex;
+            gap: 12px;
+            font-size: 14px;
+            margin-top: 16px;
+        }
+
+        .alert-warning {
+            background: #fef3c7;
+            color: #92400e;
+            border: 1px solid #fde68a;
+        }
+
+        .alert-danger {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+
+        .alert-success {
+            background: #dcfce7;
+            color: #166534;
+            border: 1px solid #bbf7d0;
+        }
+
+        .progress-container {
+            margin: 16px 0;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 12px;
+            background: #e2e8f0;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: #3b82f6;
+            transition: width 0.3s ease;
+            border-radius: 999px;
+        }
+
+        .progress-info {
+            text-align: center;
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 8px;
+        }
+
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+
+        .history-item-left {
+            flex: 1;
+        }
+
+        .history-time {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .history-glycemia {
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .history-item-right {
+            text-align: right;
+        }
+
+        .history-dose {
+            font-size: 16px;
+            font-weight: 600;
+            color: #3b82f6;
+            margin-bottom: 4px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #64748b;
+        }
+
+        .flex-between {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .color-low { color: #f97316; }
+        .color-normal { color: #22c55e; }
+        .color-high { color: #eab308; }
+        .color-critical { color: #ef4444; }
+
+        .color-positive { color: #ef4444; }
+        .color-negative { color: #22c55e; }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .dose-display {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .dose-value {
+            font-size: 60px;
+            font-weight: 700;
+            color: #3b82f6;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        .icon {
+            width: 20px;
+            height: 20px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <!-- Page d'authentification -->
+    <div id="authPage" class="auth-container">
+        <div class="card">
+            <div class="card-header text-center">
+                <h2 class="card-title">Pompe à Insuline</h2>
+                <p class="card-description">Système de gestion de glycémie personnelle</p>
+            </div>
+
+            <div class="tabs">
+                <div class="tabs-list">
+                    <button class="tab-trigger active" onclick="switchTab('login')">Connexion</button>
+                    <button class="tab-trigger" onclick="switchTab('signup')">Inscription</button>
+                </div>
+
+                <!-- Onglet Connexion -->
+                <div id="loginTab" class="tab-content active">
+                    <form onsubmit="handleLogin(event)">
+                        <div class="form-group">
+                            <label for="loginEmail">Email</label>
+                            <input type="email" id="loginEmail" required placeholder="votre@email.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="loginPassword">Mot de passe</label>
+                            <input type="password" id="loginPassword" required placeholder="••••••••">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Se connecter</button>
+                    </form>
+                </div>
+
+                <!-- Onglet Inscription -->
+                <div id="signupTab" class="tab-content">
+                    <form onsubmit="handleSignup(event)">
+                        <div class="form-group">
+                            <label for="signupName">Nom complet</label>
+                            <input type="text" id="signupName" required placeholder="Jean Dupont">
+                        </div>
+                        <div class="form-group">
+                            <label for="signupEmail">Email</label>
+                            <input type="email" id="signupEmail" required placeholder="votre@email.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="signupPassword">Mot de passe</label>
+                            <input type="password" id="signupPassword" required placeholder="••••••••">
+                        </div>
+                        <div class="form-group">
+                            <label for="targetGlycemia">Glycémie cible (mg/dL)</label>
+                            <input type="number" id="targetGlycemia" required value="100" min="70" max="140">
+                        </div>
+                        <div class="form-group">
+                            <label for="insulinSensitivity">Sensibilité à l'insuline (mg/dL par unité)</label>
+                            <input type="number" id="insulinSensitivity" required value="50" min="10" max="100">
+                        </div>
+                        <button type="submit" class="btn btn-primary">S'inscrire</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Page principale de la pompe -->
+    <div id="pumpPage" class="container hidden">
+        <div class="header">
+            <div>
+                <h1>Pompe à Insuline</h1>
+                <p>Bienvenue, <span id="userName"></span></p>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="handleLogout()">
+                🚪 Déconnexion
+            </button>
+        </div>
+
+        <div class="grid">
+            <!-- Colonne gauche -->
+            <div>
+                <!-- Glycémie en temps réel -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">📊 Glycémie en Temps Réel</h3>
+                    </div>
+
+                    <div class="glycemia-display">
+                        <div id="glycemiaValue" class="glycemia-value color-normal">120</div>
+                        <div class="glycemia-unit">mg/dL</div>
+                        <div class="glycemia-status">
+                            <span id="glycemiaIcon">➖</span>
+                            <span id="glycemiaBadge" class="badge badge-normal">Normal</span>
+                        </div>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <div class="flex-between">
+                        <span style="font-size: 14px;">Mode Simulation</span>
+                        <button id="modeBtn" class="btn btn-primary btn-sm" onclick="toggleMode()">Auto</button>
+                    </div>
+
+                    <div id="manualControls" class="hidden">
+                        <label style="font-size: 14px; margin-top: 12px; display: block;">Potentiomètre (Simulation capteur)</label>
+                        <div class="slider-container">
+                            <input type="range" id="potentiometer" min="40" max="400" value="120" oninput="updateGlycemiaManual(this.value)">
+                        </div>
+                    </div>
+
+                    <div id="alertBox"></div>
+                </div>
+
+                <!-- Dose d'insuline -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">💉 Dose d'Insuline Calculée</h3>
+                    </div>
+
+                    <div class="dose-display">
+                        <div id="insulinDose" class="dose-value">0</div>
+                        <div class="glycemia-unit">unités</div>
+                    </div>
+
+                    <div class="info-row">
+                        <span class="info-label">Glycémie cible:</span>
+                        <span id="targetDisplay" class="info-value">100 mg/dL</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Sensibilité insuline:</span>
+                        <span id="sensitivityDisplay" class="info-value">50 mg/dL/U</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Écart:</span>
+                        <span id="differenceDisplay" class="info-value">+0 mg/dL</span>
+                    </div>
+
+                    <div class="separator"></div>
+
+                    <!-- Contrôles d'injection -->
+                    <div id="injectControls">
+                        <button id="injectBtn" class="btn btn-primary btn-lg" onclick="startInjection()">
+                            💉 Injecter <span id="doseToInject">0</span> unités
+                        </button>
+                    </div>
+
+                    <div id="progressControls" class="hidden">
+                        <div class="progress-container">
+                            <div class="progress-header">
+                                <span>Injection en cours...</span>
+                                <span id="progressPercent">0%</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div id="progressFill" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-info">
+                                <span id="progressDose">0</span> / <span id="totalDose">0</span> unités
+                            </div>
+                        </div>
+                        <button class="btn btn-danger btn-lg" onclick="stopInjection()">
+                            ⛔ Arrêter l'injection
+                        </button>
+                    </div>
+
+                    <div id="statusBox"></div>
+                </div>
+            </div>
+
+            <!-- Colonne droite - Historique -->
+            <div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">📋 Historique des Injections</h3>
+                    </div>
+
+                    <div id="historyList">
+                        <div class="empty-state">Aucune injection enregistrée</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Variables globales
+        let userData = null;
+        let glycemia = 120;
+        let autoMode = true;
+        let insulinDose = 0;
+        let injectionStatus = 'idle'; // idle, injecting, completed, stopped
+        let injectionTimer = null;
+        let injectionProgress = 0;
+        let history = [];
+        let autoUpdateTimer = null;
+
+        // Gestion des onglets
+        function switchTab(tabName) {
+            const tabs = document.querySelectorAll('.tab-trigger');
+            const contents = document.querySelectorAll('.tab-content');
+            
+            tabs.forEach(tab => tab.classList.remove('active'));
+            contents.forEach(content => content.classList.remove('active'));
+            
+            if (tabName === 'login') {
+                tabs[0].classList.add('active');
+                document.getElementById('loginTab').classList.add('active');
+            } else {
+                tabs[1].classList.add('active');
+                document.getElementById('signupTab').classList.add('active');
+            }
+        }
+
+        // Gestion de la connexion
+        function handleLogin(event) {
+            event.preventDefault();
+            const email = document.getElementById('loginEmail').value;
+            
+            userData = {
+                name: email.split('@')[0],
+                email: email,
+                targetGlycemia: 100,
+                insulinSensitivity: 50
+            };
+            
+            showPumpPage();
+        }
+
+        // Gestion de l'inscription
+        function handleSignup(event) {
+            event.preventDefault();
+            
+            userData = {
+                name: document.getElementById('signupName').value,
+                email: document.getElementById('signupEmail').value,
+                targetGlycemia: parseFloat(document.getElementById('targetGlycemia').value),
+                insulinSensitivity: parseFloat(document.getElementById('insulinSensitivity').value)
+            };
+            
+            showPumpPage();
+        }
+
+        // Afficher la page de la pompe
+        function showPumpPage() {
+            document.getElementById('authPage').classList.add('hidden');
+            document.getElementById('pumpPage').classList.remove('hidden');
+            document.getElementById('userName').textContent = userData.name;
+            document.getElementById('targetDisplay').textContent = userData.targetGlycemia + ' mg/dL';
+            document.getElementById('sensitivityDisplay').textContent = userData.insulinSensitivity + ' mg/dL/U';
+            
+            startAutoUpdate();
+            updateDisplay();
+        }
+
+        // Déconnexion
+        function handleLogout() {
+            stopAutoUpdate();
+            if (injectionTimer) {
+                clearInterval(injectionTimer);
+            }
+            
+            document.getElementById('authPage').classList.remove('hidden');
+            document.getElementById('pumpPage').classList.add('hidden');
+            userData = null;
+            glycemia = 120;
+            history = [];
+            injectionStatus = 'idle';
+        }
+
+        // Basculer entre mode auto et manuel
+        function toggleMode() {
+            autoMode = !autoMode;
+            const modeBtn = document.getElementById('modeBtn');
+            const manualControls = document.getElementById('manualControls');
+            
+            if (autoMode) {
+                modeBtn.textContent = 'Auto';
+                modeBtn.classList.add('btn-primary');
+                modeBtn.classList.remove('btn-outline');
+                manualControls.classList.add('hidden');
+                startAutoUpdate();
+            } else {
+                modeBtn.textContent = 'Manuel';
+                modeBtn.classList.remove('btn-primary');
+                modeBtn.classList.add('btn-outline');
+                manualControls.classList.remove('hidden');
+                stopAutoUpdate();
+            }
+        }
+
+        // Démarrer la mise à jour automatique
+        function startAutoUpdate() {
+            if (autoMode) {
+                autoUpdateTimer = setInterval(() => {
+                    // Simulation de variations aléatoires
+                    const variation = (Math.random() - 0.5) * 10;
+                    glycemia = Math.max(40, Math.min(400, glycemia + variation));
+                    glycemia = Math.round(glycemia);
+                    updateDisplay();
+                }, 2000);
+            }
+        }
+
+        // Arrêter la mise à jour automatique
+        function stopAutoUpdate() {
+            if (autoUpdateTimer) {
+                clearInterval(autoUpdateTimer);
+                autoUpdateTimer = null;
+            }
+        }
+
+        // Mise à jour manuelle de la glycémie
+        function updateGlycemiaManual(value) {
+            glycemia = parseInt(value);
+            updateDisplay();
+        }
+
+        // Mettre à jour l'affichage
+        function updateDisplay() {
+            // Mettre à jour la glycémie
+            const glycemiaValue = document.getElementById('glycemiaValue');
+            glycemiaValue.textContent = glycemia;
+            
+            // Déterminer le niveau
+            let level = 'normal';
+            let levelText = 'Normal';
+            let color = 'color-normal';
+            let badgeClass = 'badge-normal';
+            let icon = '➖';
+            
+            if (glycemia < 70) {
+                level = 'low';
+                levelText = 'Hypoglycémie';
+                color = 'color-low';
+                badgeClass = 'badge-warning';
+                icon = '⬇️';
+            } else if (glycemia > 180 && glycemia <= 250) {
+                level = 'high';
+                levelText = 'Élevé';
+                color = 'color-high';
+                badgeClass = 'badge-warning';
+                icon = '⬆️';
+            } else if (glycemia > 250) {
+                level = 'critical';
+                levelText = 'Critique';
+                color = 'color-critical';
+                badgeClass = 'badge-danger';
+                icon = '⬆️';
+            } else if (glycemia < userData.targetGlycemia) {
+                icon = '⬇️';
+            } else if (glycemia > userData.targetGlycemia) {
+                icon = '⬆️';
+            }
+            
+            glycemiaValue.className = 'glycemia-value ' + color;
+            document.getElementById('glycemiaIcon').textContent = icon;
+            
+            const badge = document.getElementById('glycemiaBadge');
+            badge.textContent = levelText;
+            badge.className = 'badge ' + badgeClass;
+            
+            // Afficher les alertes
+            showAlert(level);
+            
+            // Calculer la dose d'insuline
+            calculateInsulinDose();
+        }
+
+        // Afficher les alertes
+        function showAlert(level) {
+            const alertBox = document.getElementById('alertBox');
+            
+            if (level === 'normal') {
+                alertBox.innerHTML = '';
+                return;
+            }
+            
+            let alertClass = 'alert-warning';
+            let message = '';
+            
+            if (level === 'low') {
+                alertClass = 'alert-warning';
+                message = '⚠️ Attention : Glycémie basse. Consommez du sucre rapide.';
+            } else if (level === 'high') {
+                alertClass = 'alert-danger';
+                message = '⚠️ Attention : Glycémie élevée. Injection recommandée.';
+            } else if (level === 'critical') {
+                alertClass = 'alert-danger';
+                message = '🚨 URGENT : Glycémie critique. Injection nécessaire immédiatement.';
+            }
+            
+            alertBox.innerHTML = '<div class="alert ' + alertClass + '">' + message + '</div>';
+        }
+
+        // Calculer la dose d'insuline
+        function calculateInsulinDose() {
+            if (glycemia > userData.targetGlycemia) {
+                const dose = (glycemia - userData.targetGlycemia) / userData.insulinSensitivity;
+                insulinDose = Math.max(0, Math.round(dose * 10) / 10);
+            } else {
+                insulinDose = 0;
+            }
+            
+            document.getElementById('insulinDose').textContent = insulinDose;
+            document.getElementById('doseToInject').textContent = insulinDose;
+            
+            // Mettre à jour l'écart
+            const difference = glycemia - userData.targetGlycemia;
+            const differenceDisplay = document.getElementById('differenceDisplay');
+            differenceDisplay.textContent = (difference > 0 ? '+' : '') + difference + ' mg/dL';
+            differenceDisplay.className = 'info-value ' + (difference > 0 ? 'color-positive' : 'color-negative');
+            
+            // Activer/désactiver le bouton d'injection
+            const injectBtn = document.getElementById('injectBtn');
+            injectBtn.disabled = insulinDose === 0;
+        }
+
+        // Commencer l'injection
+        function startInjection() {
+            if (insulinDose === 0) return;
+            
+            injectionStatus = 'injecting';
+            injectionProgress = 0;
+            
+            document.getElementById('injectControls').classList.add('hidden');
+            document.getElementById('progressControls').classList.remove('hidden');
+            document.getElementById('totalDose').textContent = insulinDose;
+            
+            // Simuler l'injection progressive (1 seconde par unité)
+            const duration = insulinDose * 1000;
+            const steps = 100;
+            const stepDuration = duration / steps;
+            
+            let currentStep = 0;
+            injectionTimer = setInterval(() => {
+                currentStep++;
+                injectionProgress = (currentStep / steps) * 100;
+                
+                updateInjectionProgress();
+                
+                if (currentStep >= steps) {
+                    completeInjection();
+                }
+            }, stepDuration);
+        }
+
+        // Mettre à jour la progression de l'injection
+        function updateInjectionProgress() {
+            document.getElementById('progressFill').style.width = injectionProgress + '%';
+            document.getElementById('progressPercent').textContent = Math.round(injectionProgress) + '%';
+            
+            const currentDose = (injectionProgress / 100) * insulinDose;
+            document.getElementById('progressDose').textContent = Math.round(currentDose * 10) / 10;
+        }
+
+        // Arrêter l'injection
+        function stopInjection() {
+            if (injectionTimer) {
+                clearInterval(injectionTimer);
+                injectionTimer = null;
+            }
+            
+            const actualDose = Math.round((injectionProgress / 100) * insulinDose * 10) / 10;
+            
+            addToHistory(actualDose, 'Arrêté');
+            
+            injectionStatus = 'stopped';
+            document.getElementById('statusBox').innerHTML = 
+                '<div class="alert alert-danger">⛔ Injection arrêtée par l\'utilisateur.</div>';
+            
+            setTimeout(() => {
+                resetInjectionControls();
+            }, 2000);
+        }
+
+        // Compléter l'injection
+        function completeInjection() {
+            if (injectionTimer) {
+                clearInterval(injectionTimer);
+                injectionTimer = null;
+            }
+            
+            addToHistory(insulinDose, 'Complété');
+            
+            injectionStatus = 'completed';
+            document.getElementById('statusBox').innerHTML = 
+                '<div class="alert alert-success">✅ Injection complétée avec succès !</div>';
+            
+            setTimeout(() => {
+                resetInjectionControls();
+            }, 2000);
+        }
+
+        // Réinitialiser les contrôles d'injection
+        function resetInjectionControls() {
+            document.getElementById('progressControls').classList.add('hidden');
+            document.getElementById('injectControls').classList.remove('hidden');
+            document.getElementById('statusBox').innerHTML = '';
+            injectionStatus = 'idle';
+            injectionProgress = 0;
+        }
+
+        // Ajouter à l'historique
+        function addToHistory(dose, status) {
+            const now = new Date();
+            const time = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            
+            history.unshift({
+                time: time,
+                glycemia: glycemia,
+                dose: dose,
+                status: status
+            });
+            
+            // Garder seulement les 10 dernières entrées
+            if (history.length > 10) {
+                history = history.slice(0, 10);
+            }
+            
+            updateHistoryDisplay();
+        }
+
+        // Mettre à jour l'affichage de l'historique
+        function updateHistoryDisplay() {
+            const historyList = document.getElementById('historyList');
+            
+            if (history.length === 0) {
+                historyList.innerHTML = '<div class="empty-state">Aucune injection enregistrée</div>';
+                return;
+            }
+            
+            let html = '';
+            history.forEach(entry => {
+                const badgeClass = entry.status === 'Complété' ? 'badge-normal' : 'badge-warning';
+                html += `
+                    <div class="history-item">
+                        <div class="history-item-left">
+                            <div class="history-time">${entry.time}</div>
+                            <div class="history-glycemia">Glycémie: ${entry.glycemia} mg/dL</div>
+                        </div>
+                        <div class="history-item-right">
+                            <div class="history-dose">${entry.dose} U</div>
+                            <span class="badge ${badgeClass}">${entry.status}</span>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            historyList.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
