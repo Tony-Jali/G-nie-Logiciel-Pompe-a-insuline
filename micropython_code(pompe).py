@@ -1,7 +1,8 @@
 import network
 import socket
 import time
-from machine import Pin, ADC
+import json
+from machine import Pin, ADC, Timer
 
 # Configuration WiFi
 SSID = "iPhone tony"
@@ -13,12 +14,143 @@ potentiometre = ADC(Pin(34))  # GPIO 34 pour le potentiomètre
 potentiometre.atten(ADC.ATTN_11DB)  # Plage 0-3.3V
 potentiometre.width(ADC.WIDTH_12BIT)  # Résolution 12 bits (0-4095)
 
+# Relais pour contrôle de la pompe à insuline
+relay_pump = Pin(10, Pin.OUT)
+relay_pump.value(0)  # Pompe éteinte au démarrage
+
+# Fichier de stockage des utilisateurs
+USERS_FILE = "users.json"
+
 # Variables globales
 current_glucose = 0
 readings_history = []
 last_stable_value = 0
 readings_buffer = []
 STABILITY_THRESHOLD = 5  # Seuil de variation acceptable en mg/dL
+
+# Variables pour l'injection d'insuline
+injection_in_progress = False
+injection_start_time = 0
+target_dose = 0.0
+injected_dose = 0.0
+injection_timer = None
+INJECTION_RATE = 0.1  # Unités par seconde
+
+# Session active
+active_sessions = {}  # {session_id: username}
+
+# Paramètres pour le calcul d'insuline
+TARGET_GLUCOSE = 100
+INSULIN_SENSITIVITY = 50
+CARB_RATIO = 15
+
+def load_users():
+    """Charge les utilisateurs depuis le fichier JSON"""
+    try:
+        with open(USERS_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        # Si le fichier n'existe pas, créer une structure vide
+        return {"users": []}
+
+def save_users(users_data):
+    """Sauvegarde les utilisateurs dans le fichier JSON"""
+    try:
+        with open(USERS_FILE, 'w') as f:
+            json.dump(users_data, f)
+        return True
+    except:
+        return False
+
+def find_user(username):
+    """Recherche un utilisateur par son nom"""
+    users_data = load_users()
+    for user in users_data["users"]:
+        if user["username"] == username:
+            return user
+    return None
+
+def register_user(username, password, email, age, weight):
+    """Enregistre un nouvel utilisateur"""
+    users_data = load_users()
+    
+    print(f"📝 Tentative d'inscription: {username}, {email}, age={age}, weight={weight}")
+    
+    # Vérifier si l'utilisateur existe déjà
+    if find_user(username):
+        print(f"❌ Utilisateur déjà existant: {username}")
+        return False, "Nom d'utilisateur déjà utilisé"
+    
+    # Convertir age et weight en int si ce sont des strings
+    try:
+        age = int(age)
+        weight = int(weight)
+    except (ValueError, TypeError) as e:
+        print(f"❌ Erreur de conversion: {e}")
+        return False, "Age et poids doivent être des nombres"
+    
+    # Créer le nouvel utilisateur
+    new_user = {
+        "username": username,
+        "password": password,  # En production, utiliser un hash!
+        "email": email,
+        "age": age,
+        "weight": weight,
+        "created_at": time.time(),
+        "injection_history": []
+    }
+    
+    users_data["users"].append(new_user)
+    
+    if save_users(users_data):
+        print(f"✅ Utilisateur enregistré: {username}")
+        return True, "Inscription réussie"
+    else:
+        print(f"❌ Erreur sauvegarde: {username}")
+        return False, "Erreur lors de l'enregistrement"
+
+def authenticate_user(username, password):
+    """Authentifie un utilisateur"""
+    user = find_user(username)
+    if user and user["password"] == password:
+        # Créer une session
+        session_id = str(time.ticks_ms())
+        active_sessions[session_id] = username
+        print(f"✅ Connexion réussie: {username}")
+        return True, session_id
+    return False, None
+
+def logout_user(session_id):
+    """Déconnecte un utilisateur"""
+    if session_id in active_sessions:
+        username = active_sessions[session_id]
+        del active_sessions[session_id]
+        print(f"👋 Déconnexion: {username}")
+        return True
+    return False
+
+def is_authenticated(session_id):
+    """Vérifie si une session est valide"""
+    return session_id in active_sessions
+
+def get_current_user(session_id):
+    """Récupère le nom d'utilisateur de la session"""
+    return active_sessions.get(session_id, None)
+
+def log_injection(username, glucose, dose, duration):
+    """Enregistre une injection dans l'historique du patient"""
+    users_data = load_users()
+    for user in users_data["users"]:
+        if user["username"] == username:
+            injection_log = {
+                "timestamp": time.time(),
+                "glucose": glucose,
+                "dose": dose,
+                "duration": duration
+            }
+            user["injection_history"].append(injection_log)
+            save_users(users_data)
+            break
 
 def connect_wifi():
     """Se connecte au WiFi"""
@@ -60,35 +192,43 @@ def connect_wifi():
     return None
 
 def read_glucose():
-    """Lit le potentiomètre et convertit en taux de glycémie (mg/dL) avec filtrage"""
-    global current_glucose, last_stable_value, readings_buffer
+    """Lit le potentiomètre et convertit en taux de glycémie"""
+    global current_glucose, last_stable_value
     
-    # Faire plusieurs lectures pour moyenner (réduire le bruit)
     samples = []
     for _ in range(10):
         adc_value = potentiometre.read()
         samples.append(adc_value)
         time.sleep_ms(5)
     
-    # Moyenne des lectures
     avg_adc = sum(samples) // len(samples)
-    
-    # Convertir en glycémie: 20 mg/dL à 400 mg/dL
     glucose = int((avg_adc / 4095) * 380 + 20)
-    
-    # Arrondir à la dizaine la plus proche pour stabiliser
     glucose = round(glucose / 10) * 10
     
-    # Appliquer un filtre de stabilité
     if abs(glucose - last_stable_value) < STABILITY_THRESHOLD:
-        # Si la variation est minime, garder la valeur précédente
         glucose = last_stable_value
     else:
-        # Sinon, mettre à jour la valeur stable
         last_stable_value = glucose
     
     current_glucose = glucose
     return glucose
+
+def calculate_insulin_dose(glucose):
+    """Calcule la dose d'insuline recommandée"""
+    if glucose <= 140:
+        return 0.0, "Aucune insuline nécessaire"
+    
+    dose = (glucose - TARGET_GLUCOSE) / INSULIN_SENSITIVITY
+    dose = round(dose * 2) / 2
+    
+    if dose > 10:
+        return 10.0, "⚠️ Dose élevée - Consulter un médecin"
+    elif dose > 5:
+        return dose, "Dose importante - Vérifier avant injection"
+    elif dose > 0:
+        return dose, "Dose de correction recommandée"
+    else:
+        return 0.0, "Aucune insuline nécessaire"
 
 def get_glucose_status(glucose):
     """Détermine le statut de la glycémie"""
@@ -101,18 +241,488 @@ def get_glucose_status(glucose):
     else:
         return "HYPERGLYCÉMIE", "#dc2626", "🚨"
 
-def web_page():
-    """Génère la page HTML avec graphique temps réel"""
+def start_injection(dose, username):
+    """Démarre l'injection d'insuline"""
+    global injection_in_progress, injection_start_time, target_dose, injected_dose
+    
+    if injection_in_progress:
+        return False, "Injection déjà en cours"
+    
+    if dose <= 0:
+        return False, "Dose invalide"
+    
+    injection_in_progress = True
+    injection_start_time = time.time()
+    target_dose = dose
+    injected_dose = 0.0
+    
+    relay_pump.value(1)
+    led.value(1)
+    
+    print(f"💉 INJECTION DÉMARRÉE - Patient: {username} - Dose: {dose} unités")
+    return True, f"Injection de {dose} unités démarrée"
+
+def stop_injection(username):
+    """Arrête l'injection d'insuline"""
+    global injection_in_progress, injected_dose, injection_start_time
+    
+    if not injection_in_progress:
+        return False, "Aucune injection en cours"
+    
+    relay_pump.value(0)
+    led.value(0)
+    
+    injection_in_progress = False
+    final_dose = injected_dose
+    duration = time.time() - injection_start_time
+    
+    # Enregistrer l'injection
+    glucose = read_glucose()
+    log_injection(username, glucose, final_dose, duration)
+    
+    print(f"🛑 INJECTION ARRÊTÉE - Patient: {username} - Dose: {final_dose:.2f} unités")
+    return True, f"Injection arrêtée - {final_dose:.2f} unités injectées"
+
+def update_injection():
+    """Met à jour l'état de l'injection"""
+    global injection_in_progress, injected_dose, target_dose
+    
+    if not injection_in_progress:
+        return
+    
+    elapsed_time = time.time() - injection_start_time
+    injected_dose = min(elapsed_time * INJECTION_RATE, target_dose)
+    
+    if injected_dose >= target_dose:
+        # Trouver l'utilisateur de la session active
+        for session_id, username in active_sessions.items():
+            stop_injection(username)
+            break
+
+def get_injection_status():
+    """Retourne le statut actuel de l'injection"""
+    if injection_in_progress:
+        progress = (injected_dose / target_dose * 100) if target_dose > 0 else 0
+        return {
+            'active': True,
+            'target_dose': target_dose,
+            'injected_dose': round(injected_dose, 2),
+            'progress': round(progress, 1),
+            'remaining': round(target_dose - injected_dose, 2)
+        }
+    else:
+        return {
+            'active': False,
+            'target_dose': 0,
+            'injected_dose': 0,
+            'progress': 0,
+            'remaining': 0
+        }
+
+def login_page():
+    """Page de connexion"""
+    html = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connexion - Glucomètre ESP32</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #e0f2fe 0%, #bfdbfe 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 450px;
+            width: 100%;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 24px;
+        }
+        
+        .logo {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+        
+        .logo-icon {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+        
+        h1 {
+            color: #1e293b;
+            text-align: center;
+            margin-bottom: 8px;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #64748b;
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+        
+        .tabs-list {
+            display: flex;
+            gap: 4px;
+            border-bottom: 2px solid #e2e8f0;
+            margin-bottom: 20px;
+        }
+        
+        .tab-button {
+            flex: 1;
+            padding: 12px 16px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #64748b;
+            transition: all 0.2s;
+            margin-bottom: -2px;
+        }
+        
+        .tab-button:hover {
+            color: #3b82f6;
+        }
+        
+        .tab-button.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.3s;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #1e293b;
+            margin-bottom: 6px;
+        }
+        
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 12px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 10px;
+        }
+        
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+        
+        .alert {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+            font-size: 14px;
+        }
+        
+        .alert.success {
+            background: #dcfce7;
+            color: #166534;
+            border: 1px solid #86efac;
+        }
+        
+        .alert.error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+        }
+        
+        .alert.show {
+            display: block;
+        }
+        
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        
+        @media (max-width: 480px) {
+            .card {
+                padding: 20px;
+            }
+            .row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="logo">
+                <div class="logo-icon">🩸</div>
+                <h1>Glucomètre ESP32</h1>
+                <p class="subtitle">Système de gestion de pompe à insuline</p>
+            </div>
+            
+            <div class="tabs-list">
+                <button class="tab-button active" onclick="showTab('login')">Connexion</button>
+                <button class="tab-button" onclick="showTab('register')">Inscription</button>
+            </div>
+            
+            <div id="alertBox" class="alert"></div>
+            
+            <!-- Formulaire de connexion -->
+            <div id="loginTab" class="tab-content active">
+                <form onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="loginUsername">Nom d'utilisateur</label>
+                        <input type="text" id="loginUsername" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="loginPassword">Mot de passe</label>
+                        <input type="password" id="loginPassword" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Se connecter</button>
+                </form>
+            </div>
+            
+            <!-- Formulaire d'inscription -->
+            <div id="registerTab" class="tab-content">
+                <form onsubmit="handleRegister(event)">
+                    <div class="form-group">
+                        <label for="regUsername">Nom d'utilisateur</label>
+                        <input type="text" id="regUsername" required minlength="3">
+                    </div>
+                    <div class="form-group">
+                        <label for="regEmail">Email</label>
+                        <input type="email" id="regEmail" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="regPassword">Mot de passe</label>
+                        <input type="password" id="regPassword" required minlength="6">
+                    </div>
+                    <div class="row">
+                        <div class="form-group">
+                            <label for="regAge">Âge</label>
+                            <input type="number" id="regAge" required min="1" max="120">
+                        </div>
+                        <div class="form-group">
+                            <label for="regWeight">Poids (kg)</label>
+                            <input type="number" id="regWeight" required min="20" max="300">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">S'inscrire</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Fonction pour changer d'onglet
+        function showTab(tabName) {
+            // Cacher tous les contenus
+            var contents = document.getElementsByClassName('tab-content');
+            for (var i = 0; i < contents.length; i++) {
+                contents[i].classList.remove('active');
+            }
+            
+            // Désactiver tous les boutons
+            var buttons = document.getElementsByClassName('tab-button');
+            for (var i = 0; i < buttons.length; i++) {
+                buttons[i].classList.remove('active');
+            }
+            
+            // Afficher l'onglet sélectionné
+            if (tabName === 'login') {
+                document.getElementById('loginTab').classList.add('active');
+                buttons[0].classList.add('active');
+            } else if (tabName === 'register') {
+                document.getElementById('registerTab').classList.add('active');
+                buttons[1].classList.add('active');
+            }
+            
+            hideAlert();
+        }
+        
+        function showAlert(message, type) {
+            var alertBox = document.getElementById('alertBox');
+            alertBox.textContent = message;
+            alertBox.className = 'alert ' + type + ' show';
+        }
+        
+        function hideAlert() {
+            var alertBox = document.getElementById('alertBox');
+            alertBox.className = 'alert';
+        }
+        
+        function handleLogin(event) {
+            event.preventDefault();
+            
+            var username = document.getElementById('loginUsername').value;
+            var password = document.getElementById('loginPassword').value;
+            
+            // Créer la requête manuellement pour compatibilité
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/login', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    var data = JSON.parse(xhr.responseText);
+                    if (data.status === 'success') {
+                        showAlert('Connexion réussie! Redirection...', 'success');
+                        setTimeout(function() {
+                            window.location.href = '/dashboard?session=' + data.session_id;
+                        }, 1000);
+                    } else {
+                        showAlert(data.message, 'error');
+                    }
+                } else {
+                    showAlert('Erreur de connexion', 'error');
+                }
+            };
+            
+            xhr.onerror = function() {
+                showAlert('Erreur de connexion', 'error');
+            };
+            
+            var payload = JSON.stringify({
+                username: username,
+                password: password
+            });
+            
+            xhr.send(payload);
+        }
+        
+        function handleRegister(event) {
+            event.preventDefault();
+            
+            var username = document.getElementById('regUsername').value;
+            var email = document.getElementById('regEmail').value;
+            var password = document.getElementById('regPassword').value;
+            var age = document.getElementById('regAge').value;
+            var weight = document.getElementById('regWeight').value;
+            
+            // Créer la requête manuellement
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/register', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    var data = JSON.parse(xhr.responseText);
+                    if (data.status === 'success') {
+                        showAlert('Inscription réussie! Vous pouvez vous connecter.', 'success');
+                        setTimeout(function() {
+                            showTab('login');
+                            document.getElementById('loginUsername').value = username;
+                        }, 1500);
+                    } else {
+                        showAlert(data.message, 'error');
+                    }
+                } else {
+                    showAlert('Erreur lors de inscription', 'error');
+                }
+            };
+            
+            xhr.onerror = function() {
+                showAlert('Erreur lors de inscription', 'error');
+            };
+            
+            var payload = JSON.stringify({
+                username: username,
+                email: email,
+                password: password,
+                age: parseInt(age),
+                weight: parseInt(weight)
+            });
+            
+            xhr.send(payload);
+        }
+    </script>
+</body>
+</html>
+"""
+    return html
+
+def dashboard_page(session_id):
+    """Page du tableau de bord (application principale)"""
+    username = get_current_user(session_id)
+    user = find_user(username)
+    
     glucose = read_glucose()
     status, color, icon = get_glucose_status(glucose)
-    uptime = time.ticks_ms() // 1000
+    insulin_dose, insulin_recommendation = calculate_insulin_dose(glucose)
+    injection_status = get_injection_status()
+    
+    # Informations patient
+    age = user.get('age', 'N/A')
+    weight = user.get('weight', 'N/A')
+    email = user.get('email', 'N/A')
     
     html = f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Glucomètre ESP32</title>
+    <title>Dashboard - Glucomètre ESP32</title>
     <style>
         * {{
             margin: 0;
@@ -121,407 +731,566 @@ def web_page():
         }}
         
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #e0f2fe 0%, #bfdbfe 100%);
             min-height: 100vh;
             padding: 20px;
         }}
         
         .container {{
-            max-width: 600px;
+            max-width: 1200px;
             margin: 0 auto;
         }}
         
         .card {{
             background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 24px;
             margin-bottom: 20px;
         }}
         
-        h1 {{
-            color: #1e3c72;
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 2em;
+        .header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }}
+        
+        .header h1 {{
+            font-size: 32px;
+            color: #1e293b;
+            font-weight: 600;
+        }}
+        
+        .header p {{
+            color: #64748b;
+            font-size: 14px;
+        }}
+        
+        .user-info {{
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }}
+        
+        .user-avatar {{
+            width: 50px;
+            height: 50px;
+            background: #3b82f6;
+            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
-        }}
-        
-        .subtitle {{
-            text-align: center;
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 0.9em;
-        }}
-        
-        .main-display {{
-            text-align: center;
-            padding: 40px 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 15px;
+            font-size: 1.5em;
             color: white;
-            margin-bottom: 20px;
         }}
         
-        .glucose-value {{
-            font-size: 4.5em;
-            font-weight: bold;
-            line-height: 1;
-            margin: 10px 0;
+        .user-details h2 {{
+            color: #1e293b;
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 3px;
         }}
         
-        .glucose-unit {{
-            font-size: 1.2em;
-            opacity: 0.9;
-            margin-bottom: 15px;
+        .user-details p {{
+            color: #64748b;
+            font-size: 14px;
         }}
         
-        .status-badge {{
-            display: inline-block;
-            padding: 10px 25px;
-            border-radius: 25px;
-            font-weight: bold;
-            font-size: 1.1em;
-            background: rgba(255,255,255,0.3);
-            margin-top: 10px;
+        .btn {{
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 14px;
+            transition: all 0.2s;
         }}
         
-        .chart-container {{
-            background: #f8f9fa;
-            border-radius: 15px;
-            padding: 20px;
-            margin-bottom: 20px;
-            height: 250px;
-            position: relative;
+        .btn-logout {{
+            background: #ef4444;
+            color: white;
         }}
         
-        canvas {{
-            width: 100% !important;
-            height: 100% !important;
+        .btn-logout:hover {{
+            background: #dc2626;
         }}
         
-        .info-grid {{
+        .btn-primary {{
+            background: #3b82f6;
+            color: white;
+            width: 100%;
+        }}
+        
+        .btn-primary:hover {{
+            background: #2563eb;
+        }}
+        
+        .btn-primary:disabled {{
+            background: #94a3b8;
+            cursor: not-allowed;
+        }}
+        
+        .btn-danger {{
+            background: #ef4444;
+            color: white;
+            width: 100%;
+        }}
+        
+        .btn-danger:hover {{
+            background: #dc2626;
+        }}
+        
+        .btn-danger:disabled {{
+            background: #94a3b8;
+            cursor: not-allowed;
+        }}
+        
+        .grid {{
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 15px;
-            margin-bottom: 20px;
+            grid-template-columns: 1fr;
+            gap: 20px;
         }}
         
-        .info-item {{
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 10px;
+        @media (min-width: 768px) {{
+            .grid {{
+                grid-template-columns: 1fr 1fr;
+            }}
+        }}
+        
+        .card-title {{
+            font-size: 18px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 16px;
+        }}
+        
+        .glycemia-display {{
             text-align: center;
+            padding: 20px;
+        }}
+        
+        .glycemia-value {{
+            font-size: 72px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #1e293b;
+        }}
+        
+        .color-normal {{
+            color: #10b981;
+        }}
+        
+        .color-low {{
+            color: #f59e0b;
+        }}
+        
+        .color-high {{
+            color: #f59e0b;
+        }}
+        
+        .color-critical {{
+            color: #ef4444;
+        }}
+        
+        .glycemia-unit {{
+            color: #64748b;
+            font-size: 18px;
+            margin-bottom: 16px;
+        }}
+        
+        .glycemia-status {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 12px;
+        }}
+        
+        .badge {{
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 500;
+        }}
+        
+        .badge-normal {{
+            background: #dcfce7;
+            color: #166534;
+        }}
+        
+        .badge-warning {{
+            background: #fef3c7;
+            color: #92400e;
+        }}
+        
+        .badge-danger {{
+            background: #fee2e2;
+            color: #991b1b;
+        }}
+        
+        .separator {{
+            height: 1px;
+            background: #e2e8f0;
+            margin: 16px 0;
+        }}
+        
+        .info-row {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
         }}
         
         .info-label {{
-            font-size: 0.85em;
-            color: #666;
-            margin-bottom: 5px;
+            color: #64748b;
+            font-size: 14px;
         }}
         
         .info-value {{
-            font-size: 1.3em;
-            font-weight: bold;
-            color: #333;
+            color: #1e293b;
+            font-size: 18px;
+            font-weight: 600;
         }}
         
-        .reference-table {{
-            background: #f8f9fa;
-            border-radius: 10px;
-            padding: 15px;
-            font-size: 0.9em;
+        .insulin-value {{
+            font-size: 48px;
+            font-weight: 700;
+            color: #3b82f6;
+            text-align: center;
+            margin: 20px 0;
         }}
         
-        .reference-table h3 {{
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 1em;
+        .control-buttons {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 16px;
         }}
         
-        .ref-row {{
+        .progress-container {{
+            margin-top: 16px;
+        }}
+        
+        .progress-bar {{
+            width: 100%;
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 999px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }}
+        
+        .progress-fill {{
+            height: 100%;
+            background: #3b82f6;
+            transition: width 0.3s ease;
+            border-radius: 999px;
+        }}
+        
+        .progress-info {{
             display: flex;
             justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid #e0e0e0;
+            font-size: 14px;
+            color: #64748b;
+            margin-bottom: 8px;
         }}
         
-        .ref-row:last-child {{
-            border-bottom: none;
-        }}
-        
-        .ref-indicator {{
-            width: 15px;
-            height: 15px;
-            border-radius: 50%;
+        .pump-indicator {{
             display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
             margin-right: 8px;
         }}
         
-        .loading {{
-            text-align: center;
-            color: #666;
-            padding: 20px;
-            font-size: 0.9em;
+        .pump-on {{
+            background: #10b981;
+            animation: pulse-pump 1s infinite;
         }}
         
-        @keyframes pulse {{
-            0%, 100% {{ transform: scale(1); }}
-            50% {{ transform: scale(1.05); }}
+        .pump-off {{
+            background: #94a3b8;
         }}
         
-        .pulse {{
-            animation: pulse 2s infinite;
+        @keyframes pulse-pump {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.5; }}
         }}
         
-        @media (max-width: 480px) {{
-            .card {{
-                padding: 20px;
-            }}
-            .glucose-value {{
-                font-size: 3.5em;
-            }}
-            .info-grid {{
-                grid-template-columns: 1fr;
-            }}
+        .alert {{
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        
+        .alert-warning {{
+            background: #fef3c7;
+            color: #92400e;
+            border: 1px solid #fde68a;
+        }}
+        
+        .alert-danger {{
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+        }}
+        
+        .alert-success {{
+            background: #dcfce7;
+            color: #166534;
+            border: 1px solid #86efac;
+        }}
+        
+        .hidden {{
+            display: none;
         }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
-            <h1>🩸 Glucomètre ESP32</h1>
-            <p class="subtitle">Simulation en temps réel</p>
-            
-            <div class="main-display pulse">
-                <div class="glucose-value">{glucose}</div>
-                <div class="glucose-unit">mg/dL</div>
-                <div class="status-badge">{icon} {status}</div>
+            <div class="header">
+                <div class="user-info">
+                    <div class="user-avatar">👤</div>
+                    <div class="user-details">
+                        <h2>{username}</h2>
+                        <p>{age} ans • {weight} kg • {email}</p>
+                    </div>
+                </div>
+                <button class="btn-logout" onclick="logout()">Déconnexion</button>
             </div>
-            
-            <div class="chart-container">
-                <canvas id="glucoseChart"></canvas>
-            </div>
-            
-            <div class="info-grid">
-                <div class="info-item">
-                    <div class="info-label">📊 Mesures</div>
-                    <div class="info-value" id="measureCount">0</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">⏱️ Dernière mesure</div>
-                    <div class="info-value" id="lastUpdate">0s</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">📉 Minimum</div>
-                    <div class="info-value" id="minValue">--</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">📈 Maximum</div>
-                    <div class="info-value" id="maxValue">--</div>
+        </div>
+        
+        <div class="grid">
+            <!-- Carte Glycémie -->
+            <div class="card">
+                <h3 class="card-title">📊 Glycémie actuelle</h3>
+                <div class="glycemia-display">
+                    <div class="glycemia-value" id="glycemiaValue">{glucose}</div>
+                    <div class="glycemia-unit">mg/dL</div>
+                    <div class="glycemia-status">
+                        <span id="glycemiaIcon">{icon}</span>
+                        <span class="badge badge-normal" id="glycemiaBadge">{status}</span>
+                    </div>
                 </div>
             </div>
             
-            <div class="reference-table">
-                <h3>📋 Valeurs de référence</h3>
-                <div class="ref-row">
-                    <span><span class="ref-indicator" style="background: #ef4444;"></span>Hypoglycémie</span>
-                    <span>&lt; 70 mg/dL</span>
+            <!-- Carte Dose d'insuline -->
+            <div class="card">
+                <h3 class="card-title">💉 Dose recommandée</h3>
+                <div class="insulin-value" id="insulinDose">{insulin_dose}</div>
+                <div style="text-align: center; color: #64748b; font-size: 14px; margin-bottom: 16px;">unités</div>
+                <div style="text-align: center; padding: 8px; background: #f1f5f9; border-radius: 6px; font-size: 13px; color: #64748b;" id="insulinRec">{insulin_recommendation}</div>
+            </div>
+        </div>
+        
+        <!-- Carte Contrôle de la pompe -->
+        <div class="card">
+            <h3 class="card-title">🎛️ Contrôle de la pompe</h3>
+            
+            <div id="alertBox"></div>
+            
+            <div class="info-row">
+                <span class="info-label">État de la pompe</span>
+                <span class="info-value" id="pumpStatus">
+                    <span class="pump-indicator pump-off"></span>Arrêtée
+                </span>
+            </div>
+            
+            <div class="separator"></div>
+            
+            <div class="info-row">
+                <span class="info-label">Dose cible</span>
+                <span class="info-value" id="targetDose">0.0 U</span>
+            </div>
+            
+            <div class="info-row">
+                <span class="info-label">Dose injectée</span>
+                <span class="info-value" id="injectedDose">0.0 U</span>
+            </div>
+            
+            <div class="info-row">
+                <span class="info-label">Restant</span>
+                <span class="info-value" id="remainingDose">0.0 U</span>
+            </div>
+            
+            <div class="progress-container">
+                <div class="progress-info">
+                    <span>Progression</span>
+                    <span id="progressText">0%</span>
                 </div>
-                <div class="ref-row">
-                    <span><span class="ref-indicator" style="background: #10b981;"></span>Normal</span>
-                    <span>70 - 140 mg/dL</span>
-                </div>
-                <div class="ref-row">
-                    <span><span class="ref-indicator" style="background: #f59e0b;"></span>Élevé</span>
-                    <span>140 - 200 mg/dL</span>
-                </div>
-                <div class="ref-row">
-                    <span><span class="ref-indicator" style="background: #dc2626;"></span>Hyperglycémie</span>
-                    <span>&gt; 200 mg/dL</span>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressBar" style="width: 0%;"></div>
                 </div>
             </div>
+            
+            <div class="control-buttons">
+                <button class="btn btn-primary" id="btnStart" onclick="startInjection()">
+                    ▶️ Injecter
+                </button>
+                <button class="btn btn-danger" id="btnStop" onclick="stopInjection()" disabled>
+                    ⏹️ Arrêter
+                </button>
+            </div>
+        </div>
+        
+        <!-- Avertissement -->
+        <div class="alert alert-warning">
+            ⚠️ <strong>AVERTISSEMENT:</strong> Ceci est une simulation éducative. Ne JAMAIS utiliser ce système pour une injection réelle sans supervision médicale professionnelle.
         </div>
     </div>
 
     <script>
-        let glucoseData = [];
-        let timeLabels = [];
-        let measureCount = 0;
-        let minGlucose = Infinity;
-        let maxGlucose = -Infinity;
-        const maxDataPoints = 20;
+        const sessionId = new URLSearchParams(window.location.search).get('session');
         
-        // Créer le graphique
-        const canvas = document.getElementById('glucoseChart');
-        const ctx = canvas.getContext('2d');
+        function logout() {{
+            if (confirm('Voulez-vous vraiment vous déconnecter?')) {{
+                fetch('/api/logout?session=' + sessionId, {{method: 'POST'}})
+                    .then(() => window.location.href = '/')
+                    .catch(err => console.error('Erreur:', err));
+            }}
+        }}
         
-        function drawChart() {{
-            const width = canvas.width;
-            const height = canvas.height;
+        function updateDisplay(data) {{
+            // Mise à jour de la glycémie
+            document.getElementById('glycemiaValue').textContent = data.glucose;
+            document.getElementById('insulinDose').textContent = data.insulin_dose;
+            document.getElementById('insulinRec').textContent = data.insulin_recommendation;
             
-            ctx.clearRect(0, 0, width, height);
+            // Déterminer le statut et la couleur
+            let statusClass = 'color-normal';
+            let badgeClass = 'badge-normal';
+            let icon = '➖';
+            let statusText = data.status;
             
-            if (glucoseData.length === 0) {{
-                ctx.fillStyle = '#999';
-                ctx.font = '14px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('En attente de données...', width/2, height/2);
+            if (data.glucose < 70) {{
+                statusClass = 'color-low';
+                badgeClass = 'badge-warning';
+                icon = '⬇️';
+            }} else if (data.glucose > 200) {{
+                statusClass = 'color-critical';
+                badgeClass = 'badge-danger';
+                icon = '⬆️';
+            }} else if (data.glucose > 140) {{
+                statusClass = 'color-high';
+                badgeClass = 'badge-warning';
+                icon = '⬆️';
+            }}
+            
+            document.getElementById('glycemiaValue').className = 'glycemia-value ' + statusClass;
+            document.getElementById('glycemiaIcon').textContent = icon;
+            document.getElementById('glycemiaBadge').className = 'badge ' + badgeClass;
+            document.getElementById('glycemiaBadge').textContent = statusText;
+            
+            // Mise à jour du statut d'injection
+            const injStatus = data.injection_status;
+            document.getElementById('targetDose').textContent = injStatus.target_dose.toFixed(1) + ' U';
+            document.getElementById('injectedDose').textContent = injStatus.injected_dose.toFixed(2) + ' U';
+            document.getElementById('remainingDose').textContent = injStatus.remaining.toFixed(2) + ' U';
+            
+            const progress = injStatus.progress || 0;
+            document.getElementById('progressBar').style.width = progress + '%';
+            document.getElementById('progressText').textContent = progress.toFixed(0) + '%';
+            
+            // État de la pompe
+            const btnStart = document.getElementById('btnStart');
+            const btnStop = document.getElementById('btnStop');
+            const pumpStatus = document.getElementById('pumpStatus');
+            
+            if (injStatus.active) {{
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+                pumpStatus.innerHTML = '<span class="pump-indicator pump-on"></span>En fonctionnement';
+            }} else {{
+                btnStart.disabled = false;
+                btnStop.disabled = true;
+                pumpStatus.innerHTML = '<span class="pump-indicator pump-off"></span>Arrêtée';
+            }}
+        }}
+        
+        function startInjection() {{
+            const dose = parseFloat(document.getElementById('insulinDose').textContent);
+            if (dose <= 0) {{
+                alert('Aucune insuline nécessaire!');
                 return;
             }}
             
-            // Marges
-            const margin = {{top: 20, right: 20, bottom: 30, left: 50}};
-            const chartWidth = width - margin.left - margin.right;
-            const chartHeight = height - margin.top - margin.bottom;
-            
-            // Échelles
-            const maxY = 400;
-            const minY = 0;
-            const scaleY = chartHeight / (maxY - minY);
-            const scaleX = chartWidth / (maxDataPoints - 1);
-            
-            // Zones de référence
-            ctx.fillStyle = 'rgba(239, 68, 68, 0.1)';
-            ctx.fillRect(margin.left, margin.top, chartWidth, (maxY - 200) * scaleY);
-            
-            ctx.fillStyle = 'rgba(16, 185, 129, 0.1)';
-            ctx.fillRect(margin.left, margin.top + (maxY - 140) * scaleY, chartWidth, 70 * scaleY);
-            
-            // Grille
-            ctx.strokeStyle = '#e0e0e0';
-            ctx.lineWidth = 1;
-            for (let i = 0; i <= 4; i++) {{
-                const y = margin.top + (chartHeight / 4) * i;
-                ctx.beginPath();
-                ctx.moveTo(margin.left, y);
-                ctx.lineTo(width - margin.right, y);
-                ctx.stroke();
-                
-                // Labels Y
-                const value = maxY - (maxY / 4) * i;
-                ctx.fillStyle = '#666';
-                ctx.font = '11px Arial';
-                ctx.textAlign = 'right';
-                ctx.fillText(value.toFixed(0), margin.left - 5, y + 4);
+            if (confirm(`Voulez-vous injecter ${{dose}} unités d'insuline?`)) {{
+                fetch('/api/injection/start?session=' + sessionId, {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{dose: dose}})
+                }})
+                .then(response => response.json())
+                .then(data => console.log('Injection démarrée:', data))
+                .catch(err => console.error('Erreur:', err));
             }}
-            
-            // Tracer la courbe
-            if (glucoseData.length > 1) {{
-                ctx.strokeStyle = '#667eea';
-                ctx.lineWidth = 3;
-                ctx.beginPath();
-                
-                glucoseData.forEach((value, index) => {{
-                    const x = margin.left + index * scaleX;
-                    const y = margin.top + (maxY - value) * scaleY;
-                    
-                    if (index === 0) {{
-                        ctx.moveTo(x, y);
-                    }} else {{
-                        ctx.lineTo(x, y);
-                    }}
-                }});
-                
-                ctx.stroke();
-                
-                // Points
-                glucoseData.forEach((value, index) => {{
-                    const x = margin.left + index * scaleX;
-                    const y = margin.top + (maxY - value) * scaleY;
-                    
-                    ctx.fillStyle = value < 70 ? '#ef4444' : 
-                                   value > 200 ? '#dc2626' : 
-                                   value > 140 ? '#f59e0b' : '#10b981';
-                    ctx.beginPath();
-                    ctx.arc(x, y, 4, 0, Math.PI * 2);
-                    ctx.fill();
-                }});
-            }}
-            
-            // Labels X
-            ctx.fillStyle = '#666';
-            ctx.font = '11px Arial';
-            ctx.textAlign = 'center';
-            ctx.fillText('Temps', width/2, height - 5);
         }}
         
-        function updateChart(glucose) {{
-            glucoseData.push(glucose);
-            timeLabels.push(measureCount);
-            
-            if (glucoseData.length > maxDataPoints) {{
-                glucoseData.shift();
-                timeLabels.shift();
-            }}
-            
-            measureCount++;
-            minGlucose = Math.min(minGlucose, glucose);
-            maxGlucose = Math.max(maxGlucose, glucose);
-            
-            document.getElementById('measureCount').textContent = measureCount;
-            document.getElementById('minValue').textContent = minGlucose + ' mg/dL';
-            document.getElementById('maxValue').textContent = maxGlucose + ' mg/dL';
-            
-            drawChart();
-        }}
-        
-        function resizeCanvas() {{
-            const container = canvas.parentElement;
-            canvas.width = container.clientWidth - 40;
-            canvas.height = container.clientHeight - 40;
-            drawChart();
-        }}
-        
-        window.addEventListener('resize', resizeCanvas);
-        resizeCanvas();
-        
-        // Mise à jour automatique
-        let lastUpdateTime = Date.now();
-        
-        function fetchGlucose() {{
-            fetch('/api/glucose')
+        function stopInjection() {{
+            if (confirm('Voulez-vous arrêter l\'injection en cours?')) {{
+                fetch('/api/injection/stop?session=' + sessionId, {{
+                    method: 'POST'
+                }})
                 .then(response => response.json())
                 .then(data => {{
-                    updateChart(data.glucose);
-                    lastUpdateTime = Date.now();
+                    console.log('Injection arrêtée:', data);
+                    alert(data.message);
                 }})
+                .catch(err => console.error('Erreur:', err));
+            }}
+        }}
+        
+        function fetchData() {{
+            fetch('/api/glucose?session=' + sessionId)
+                .then(response => response.json())
+                .then(data => updateDisplay(data))
                 .catch(err => console.error('Erreur:', err));
         }}
         
-        // Timer pour afficher le temps écoulé
-        setInterval(() => {{
-            const elapsed = Math.floor((Date.now() - lastUpdateTime) / 1000);
-            document.getElementById('lastUpdate').textContent = elapsed + 's';
-        }}, 1000);
-        
-        // Actualisation toutes les 2 secondes
-        setInterval(fetchGlucose, 2000);
-        fetchGlucose();
+        setInterval(fetchData, 500);
+        fetchData();
     </script>
 </body>
 </html>
 """
     return html
 
-def api_glucose():
-    """Retourne les données JSON pour l'API"""
+def parse_json_body(body):
+    """Parse le corps JSON de la requête"""
+    try:
+        return json.loads(body)
+    except:
+        return None
+
+def api_glucose(session_id):
+    """API glucose avec vérification de session"""
+    if not is_authenticated(session_id):
+        return '{{"status": "error", "message": "Non authentifié"}}'
+    
     glucose = read_glucose()
     status, color, icon = get_glucose_status(glucose)
+    insulin_dose, insulin_recommendation = calculate_insulin_dose(glucose)
+    injection_status = get_injection_status()
     
-    # Construire manuellement le JSON pour éviter l'erreur de hash
-    json_response = '{{"glucose": {}, "status": "{}", "color": "{}", "icon": "{}", "timestamp": {}}}'.format(
-        glucose, status, color, icon, time.ticks_ms()
+    return '{{"glucose": {}, "status": "{}", "color": "{}", "icon": "{}", "insulin_dose": {}, "insulin_recommendation": "{}", "injection_status": {{"active": {}, "target_dose": {}, "injected_dose": {}, "progress": {}, "remaining": {}}}}}'.format(
+        glucose, status, color, icon, insulin_dose, insulin_recommendation,
+        'true' if injection_status['active'] else 'false',
+        injection_status['target_dose'],
+        injection_status['injected_dose'],
+        injection_status['progress'],
+        injection_status['remaining']
     )
-    
-    return json_response
 
 def start_server(wlan):
-    """Démarre le serveur web"""
+    """Démarre le serveur web avec authentification"""
     addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -531,39 +1300,163 @@ def start_server(wlan):
     ip = wlan.ifconfig()[0]
     print(f"\n{'='*50}")
     print(f"🩸 GLUCOMÈTRE ESP32 - SERVEUR ACTIF")
+    print(f"💉 Système de Pompe à Insuline Sécurisé")
     print(f"{'='*50}")
-    print(f"📱 Ouvrez sur votre iPhone:")
+    print(f"📱 URL d'accès:")
     print(f"   👉 http://{ip}")
-    print(f"{'='*50}")
-    print(f"🎛️  Tournez le potentiomètre pour simuler")
-    print(f"    la glycémie en temps réel!\n")
+    print(f"{'='*50}\n")
     print("✅ En attente de connexions...\n")
     
     while True:
         try:
-            cl, addr = s.accept()
-            request = cl.recv(1024).decode('utf-8')
+            update_injection()
             
-            # API pour obtenir la glycémie
-            if '/api/glucose' in request:
-                response = api_glucose()
+            cl, addr = s.accept()
+            request = cl.recv(2048).decode('utf-8')
+            
+            # Extraire la session ID si présente
+            session_id = None
+            if 'session=' in request:
+                session_start = request.find('session=') + 8
+                session_end = request.find(' ', session_start)
+                if session_end == -1:
+                    session_end = request.find('&', session_start)
+                if session_end == -1:
+                    session_end = len(request)
+                session_id = request[session_start:session_end]
+            
+            # API Login
+            if 'POST /api/login' in request:
+                body_start = request.find('\r\n\r\n') + 4
+                body = request[body_start:]
+                data = parse_json_body(body)
+                
+                if data:
+                    success, session = authenticate_user(data['username'], data['password'])
+                    if success:
+                        response = '{{"status": "success", "session_id": "{}"}}'.format(session)
+                    else:
+                        response = '{{"status": "error", "message": "Identifiants incorrects"}}'
+                else:
+                    response = '{{"status": "error", "message": "Données invalides"}}'
+                
                 cl.send('HTTP/1.1 200 OK\r\n')
                 cl.send('Content-Type: application/json\r\n')
                 cl.send('Connection: close\r\n\r\n')
                 cl.sendall(response)
-                
-                glucose = read_glucose()
-                status, _, _ = get_glucose_status(glucose)
-                print(f"📊 Mesure: {glucose} mg/dL - {status}")
             
-            # Page principale
+            # API Register
+            elif 'POST /api/register' in request:
+                print("📥 Requête d'inscription reçue")
+                body_start = request.find('\r\n\r\n') + 4
+                body = request[body_start:]
+                print(f"📄 Body brut: {body[:100]}")  # Afficher les 100 premiers caractères
+                
+                data = parse_json_body(body)
+                print(f"📊 Data parsé: {data}")
+                
+                if data:
+                    try:
+                        success, message = register_user(
+                            data['username'],
+                            data['password'],
+                            data['email'],
+                            data['age'],
+                            data['weight']
+                        )
+                        if success:
+                            response = '{{"status": "success", "message": "{}"}}'.format(message)
+                            print(f"✅ Inscription réussie")
+                        else:
+                            response = '{{"status": "error", "message": "{}"}}'.format(message)
+                            print(f"❌ Inscription échouée: {message}")
+                    except Exception as e:
+                        print(f"❌ Exception: {e}")
+                        response = '{{"status": "error", "message": "Erreur serveur: {}"}}'.format(str(e))
+                else:
+                    print("❌ Données JSON invalides")
+                    response = '{{"status": "error", "message": "Données invalides"}}'
+                
+                cl.send('HTTP/1.1 200 OK\r\n')
+                cl.send('Content-Type: application/json\r\n')
+                cl.send('Connection: close\r\n\r\n')
+                cl.sendall(response)
+            
+            # API Logout
+            elif 'POST /api/logout' in request and session_id:
+                logout_user(session_id)
+                response = '{{"status": "success"}}'
+                cl.send('HTTP/1.1 200 OK\r\n')
+                cl.send('Content-Type: application/json\r\n')
+                cl.send('Connection: close\r\n\r\n')
+                cl.sendall(response)
+            
+            # API Injection Start
+            elif 'POST /api/injection/start' in request and session_id:
+                if is_authenticated(session_id):
+                    body_start = request.find('\r\n\r\n') + 4
+                    body = request[body_start:]
+                    data = parse_json_body(body)
+                    
+                    if data:
+                        username = get_current_user(session_id)
+                        success, message = start_injection(data['dose'], username)
+                        status = "success" if success else "error"
+                        response = '{{"status": "{}", "message": "{}"}}'.format(status, message)
+                    else:
+                        response = '{{"status": "error", "message": "Données invalides"}}'
+                else:
+                    response = '{{"status": "error", "message": "Non authentifié"}}'
+                
+                cl.send('HTTP/1.1 200 OK\r\n')
+                cl.send('Content-Type: application/json\r\n')
+                cl.send('Connection: close\r\n\r\n')
+                cl.sendall(response)
+            
+            # API Injection Stop
+            elif 'POST /api/injection/stop' in request and session_id:
+                if is_authenticated(session_id):
+                    username = get_current_user(session_id)
+                    success, message = stop_injection(username)
+                    status = "success" if success else "error"
+                    response = '{{"status": "{}", "message": "{}"}}'.format(status, message)
+                else:
+                    response = '{{"status": "error", "message": "Non authentifié"}}'
+                
+                cl.send('HTTP/1.1 200 OK\r\n')
+                cl.send('Content-Type: application/json\r\n')
+                cl.send('Connection: close\r\n\r\n')
+                cl.sendall(response)
+            
+            # API Glucose
+            elif '/api/glucose' in request and session_id:
+                response = api_glucose(session_id)
+                cl.send('HTTP/1.1 200 OK\r\n')
+                cl.send('Content-Type: application/json\r\n')
+                cl.send('Connection: close\r\n\r\n')
+                cl.sendall(response)
+            
+            # Dashboard (nécessite authentification)
+            elif '/dashboard' in request and session_id:
+                if is_authenticated(session_id):
+                    response = dashboard_page(session_id)
+                    cl.send('HTTP/1.1 200 OK\r\n')
+                    cl.send('Content-Type: text/html; charset=utf-8\r\n')
+                    cl.send('Connection: close\r\n\r\n')
+                    cl.sendall(response)
+                else:
+                    # Redirection vers login
+                    cl.send('HTTP/1.1 302 Found\r\n')
+                    cl.send('Location: /\r\n')
+                    cl.send('Connection: close\r\n\r\n')
+            
+            # Page de connexion (par défaut)
             else:
-                response = web_page()
+                response = login_page()
                 cl.send('HTTP/1.1 200 OK\r\n')
                 cl.send('Content-Type: text/html; charset=utf-8\r\n')
                 cl.send('Connection: close\r\n\r\n')
                 cl.sendall(response)
-                print(f"👤 Connexion de {addr[0]}")
             
             cl.close()
             
@@ -571,6 +1464,7 @@ def start_server(wlan):
             cl.close()
         except KeyboardInterrupt:
             print("\n\n👋 Arrêt du serveur")
+            stop_injection("system")
             s.close()
             led.off()
             break
@@ -578,6 +1472,7 @@ def start_server(wlan):
 def main():
     print("\n" + "="*50)
     print("   🩸 GLUCOMÈTRE ESP32 - MicroPython")
+    print("   💉 Système Sécurisé avec Authentification")
     print("="*50 + "\n")
     
     wlan = connect_wifi()
@@ -590,7 +1485,9 @@ def main():
         start_server(wlan)
     except Exception as e:
         print(f"\n❌ Erreur: {e}")
+        stop_injection("system")
         led.off()
 
 if __name__ == "__main__":
     main()
+
