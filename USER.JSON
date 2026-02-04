@@ -1,0 +1,20 @@
+{
+  "users": [
+    {
+      "username": "demo",
+      "password": "demo123",
+      "email": "demo@example.com",
+      "age": 45,
+      "weight": 75,
+      "created_at": 1738454400,
+      "injection_history": [
+        {
+          "timestamp": 1738454400,
+          "glucose": 180,
+          "dose": 1.5,
+          "duration": 15.0
+        }
+      ]
+    }
+  ]
+}
